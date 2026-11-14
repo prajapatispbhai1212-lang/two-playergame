@@ -1,0 +1,573 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Peer Multiplayer Game</title>
+
+<!-- PeerJS Library -->
+<script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: #101525;
+    color: white;
+    font-family: Arial, sans-serif;
+    text-align: center;
+}
+
+h1 {
+    color: #55d6ff;
+    margin-top: 20px;
+}
+
+.panel {
+    max-width: 500px;
+    margin: 20px auto;
+    padding: 20px;
+    background: #1d2940;
+    border-radius: 14px;
+}
+
+input, button {
+    padding: 12px;
+    margin: 6px;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+}
+
+input {
+    width: 85%;
+    background: #fff;
+    color: #111;
+}
+
+button {
+    background: #00baff;
+    color: white;
+    cursor: pointer;
+    font-weight: bold;
+}
+
+button:hover {
+    background: #008dcc;
+}
+
+#game {
+    display: none;
+    max-width: 900px;
+    margin: auto;
+    padding: 10px;
+}
+
+canvas {
+    width: 100%;
+    background: #182238;
+    border: 2px solid #55d6ff;
+    border-radius: 12px;
+    touch-action: none;
+}
+
+.info {
+    color: #8deaff;
+    margin: 12px;
+    word-break: break-word;
+}
+
+#players {
+    color: #b9d9ff;
+    margin: 12px;
+}
+
+#status {
+    color: #ffd166;
+}
+
+.controls {
+    margin: 10px;
+}
+
+.controls button {
+    min-width: 55px;
+}
+
+.small {
+    color: #aab6ca;
+    font-size: 13px;
+}
+</style>
+</head>
+
+<body>
+
+<h1>⚡ MULTIPLAYER ARENA</h1>
+<p class="small">Real-Time Peer to Peer Game</p>
+
+<div class="panel" id="lobby">
+
+    <h2>🎮 Create Your Player</h2>
+
+    <input id="playerName" placeholder="Enter your player name"
+           maxlength="16" value="Player">
+
+    <br>
+
+    <button onclick="createRoom()">CREATE ROOM</button>
+
+    <hr style="border-color:#39465d;margin:20px;">
+
+    <h3>Join Existing Room</h3>
+
+    <input id="roomCode" placeholder="Enter Room / Player ID">
+
+    <br>
+
+    <button onclick="joinRoom()">JOIN ROOM</button>
+
+    <p id="status">Waiting to connect...</p>
+
+</div>
+
+<div id="game">
+
+    <div class="panel">
+        <h3>ROOM ID</h3>
+        <div class="info" id="roomDisplay">---</div>
+        <button onclick="copyRoom()">COPY ROOM ID</button>
+        <div id="players">Players: 1</div>
+    </div>
+
+    <canvas id="canvas" width="900" height="500"></canvas>
+
+    <div class="controls">
+        <p>Move your player using keyboard</p>
+        <button onclick="moveTouch(0,-1)">⬆️</button>
+        <br>
+        <button onclick="moveTouch(-1,0)">⬅️</button>
+        <button onclick="moveTouch(0,1)">⬇️</button>
+        <button onclick="moveTouch(1,0)">➡️</button>
+    </div>
+
+    <button onclick="leaveGame()" style="background:#e74c3c">
+        LEAVE GAME
+    </button>
+
+</div>
+
+<script>
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+let peer = null;
+let hostConnection = null;
+let isHost = false;
+let connected = false;
+
+let myId = "";
+let myName = "Player";
+
+let players = {};
+let connections = {};
+
+const SPEED = 4;
+const COLORS = [
+    "#00d9ff",
+    "#ff4d8d",
+    "#ffe066",
+    "#80ff72",
+    "#bd93f9",
+    "#ff914d"
+];
+
+let keys = {};
+let lastSend = 0;
+let lastBroadcast = 0;
+let touchDirection = {x:0,y:0};
+
+// Create local player
+function newPlayer(id, name, color) {
+    return {
+        id: id,
+        name: name,
+        x: 100 + Math.random() * 600,
+        y: 100 + Math.random() * 300,
+        color: color,
+        radius: 16
+    };
+}
+
+function setStatus(message) {
+    document.getElementById("status").textContent = message;
+}
+
+// Create room
+function createRoom() {
+
+    if (peer) return;
+
+    myName = document.getElementById("playerName").value.trim() || "Player";
+
+    setStatus("Creating room...");
+
+    isHost = true;
+    peer = new Peer();
+
+    peer.on("open", function(id) {
+
+        myId = id;
+
+        players[myId] = newPlayer(
+            myId,
+            myName,
+            COLORS[0]
+        );
+
+        connected = true;
+
+        startGame();
+    });
+
+    peer.on("connection", function(conn) {
+        handleHostConnection(conn);
+    });
+
+    peer.on("error", function(err) {
+        setStatus("Connection error: " + err.type);
+    });
+
+    peer.on("disconnected", function() {
+        setStatus("Disconnected from signaling server.");
+    });
+}
+
+// Join room
+function joinRoom() {
+
+    if (peer) return;
+
+    const roomId = document.getElementById("roomCode").value.trim();
+
+    if (!roomId) {
+        setStatus("Please enter Room ID!");
+        return;
+    }
+
+    myName = document.getElementById("playerName").value.trim() || "Player";
+
+    setStatus("Connecting to room...");
+
+    isHost = false;
+    peer = new Peer();
+
+    peer.on("open", function(id) {
+
+        myId = id;
+
+        hostConnection = peer.connect(roomId, {
+            reliable: true
+        });
+
+        hostConnection.on("open", function() {
+
+            connected = true;
+
+            hostConnection.send({
+                type: "hello",
+                name: myName
+            });
+
+            startGame();
+        });
+
+        hostConnection.on("data", function(data) {
+            handleGuestData(data);
+        });
+
+        hostConnection.on("close", function() {
+            setStatus("Host disconnected!");
+            connected = false;
+        });
+    });
+
+    peer.on("error", function(err) {
+        setStatus("Connection error: " + err.type);
+    });
+}
+
+// Host receives player connections
+function handleHostConnection(conn) {
+
+    connections[conn.peer] = conn;
+
+    conn.on("data", function(data) {
+
+        if (data.type === "hello") {
+
+            const color = COLORS[
+                Object.keys(players).length % COLORS.length
+            ];
+
+            players[conn.peer] = newPlayer(
+                conn.peer,
+                String(data.name || "Player").slice(0,16),
+                color
+            );
+
+            broadcastState();
+
+        }
+
+        if (data.type === "position" && players[conn.peer]) {
+
+            players[conn.peer].x = data.x;
+            players[conn.peer].y = data.y;
+
+            broadcastState();
+        }
+    });
+
+    conn.on("close", function() {
+
+        delete players[conn.peer];
+        delete connections[conn.peer];
+
+        broadcastState();
+    });
+}
+
+// Guest receives host game state
+function handleGuestData(data) {
+
+    if (data.type === "state") {
+        players = data.players || {};
+    }
+}
+
+// Host broadcasts state to all connected players
+function broadcastState() {
+
+    const message = {
+        type: "state",
+        players: players
+    };
+
+    Object.values(connections).forEach(function(conn) {
+
+        if (conn.open) {
+            conn.send(message);
+        }
+    });
+}
+
+// Start game
+function startGame() {
+
+    document.getElementById("lobby").style.display = "none";
+    document.getElementById("game").style.display = "block";
+
+    document.getElementById("roomDisplay").textContent =
+        isHost ? myId : hostConnection.peer;
+
+    setStatus("Connected!");
+
+    if (isHost) {
+        broadcastState();
+    }
+
+    requestAnimationFrame(gameLoop);
+}
+
+// Keyboard controls
+window.addEventListener("keydown", function(e) {
+
+    const key = e.key.toLowerCase();
+
+    if (["arrowup","arrowdown","arrowleft","arrowright"," "].includes(key)) {
+        e.preventDefault();
+    }
+
+    keys[key] = true;
+});
+
+window.addEventListener("keyup", function(e) {
+    keys[e.key.toLowerCase()] = false;
+});
+
+// Touch controls
+function moveTouch(x, y) {
+    touchDirection.x = x;
+    touchDirection.y = y;
+
+    setTimeout(function() {
+        touchDirection = {x:0,y:0};
+    }, 160);
+}
+
+// Main game loop
+function gameLoop(time) {
+
+    if (!connected) return;
+
+    let me = players[myId];
+
+    if (me) {
+
+        let dx = 0;
+        let dy = 0;
+
+        if (keys["w"] || keys["arrowup"]) dy--;
+        if (keys["s"] || keys["arrowdown"]) dy++;
+        if (keys["a"] || keys["arrowleft"]) dx--;
+        if (keys["d"] || keys["arrowright"]) dx++;
+
+        dx += touchDirection.x;
+        dy += touchDirection.y;
+
+        // Normalize diagonal movement
+        const length = Math.hypot(dx, dy);
+
+        if (length > 0) {
+            dx /= length;
+            dy /= length;
+        }
+
+        me.x += dx * SPEED;
+        me.y += dy * SPEED;
+
+        me.x = Math.max(18, Math.min(canvas.width - 18, me.x));
+        me.y = Math.max(18, Math.min(canvas.height - 18, me.y));
+
+        // Send movement to host
+        if (!isHost && hostConnection &&
+            hostConnection.open && time - lastSend > 40) {
+
+            hostConnection.send({
+                type: "position",
+                x: me.x,
+                y: me.y
+            });
+
+            lastSend = time;
+        }
+
+        // Host broadcasts movement
+        if (isHost && time - lastBroadcast > 40) {
+            broadcastState();
+            lastBroadcast = time;
+        }
+    }
+
+    drawGame();
+
+    requestAnimationFrame(gameLoop);
+}
+
+// Draw game
+function drawGame() {
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Background grid
+    ctx.strokeStyle = "#26344c";
+    ctx.lineWidth = 1;
+
+    for (let x = 0; x < canvas.width; x += 50) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+    }
+
+    for (let y = 0; y < canvas.height; y += 50) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+    }
+
+    // Draw players
+    Object.values(players).forEach(function(p) {
+
+        // Player shadow
+        ctx.beginPath();
+        ctx.arc(p.x, p.y + 4, 18, 0, Math.PI * 2);
+        ctx.fillStyle = "#0006";
+        ctx.fill();
+
+        // Player
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.fill();
+
+        // Border
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "#ffffff";
+        ctx.stroke();
+
+        // Name
+        ctx.fillStyle = "white";
+        ctx.font = "bold 13px Arial";
+        ctx.textAlign = "center";
+        ctx.fillText(p.name, p.x, p.y - 27);
+
+        if (p.id === myId) {
+            ctx.fillStyle = "#55d6ff";
+            ctx.fillText("YOU", p.x, p.y + 35);
+        }
+    });
+
+    document.getElementById("players").textContent =
+        "Players Online: " + Object.keys(players).length;
+}
+
+// Copy room ID
+function copyRoom() {
+
+    const code = isHost ? myId : hostConnection.peer;
+
+    navigator.clipboard.writeText(code).then(function() {
+        setStatus("Room ID copied!");
+    }).catch(function() {
+        setStatus("Copy failed. Select the Room ID manually.");
+    });
+}
+
+// Leave game
+function leaveGame() {
+
+    connected = false;
+
+    if (isHost) {
+        Object.values(connections).forEach(function(conn) {
+            if (conn.open) conn.close();
+        });
+    } else if (hostConnection) {
+        hostConnection.close();
+    }
+
+    if (peer) {
+        peer.destroy();
+        peer = null;
+    }
+
+    players = {};
+    connections = {};
+    hostConnection = null;
+
+    document.getElementById("game").style.display = "none";
+    document.getElementById("lobby").style.display = "block";
+
+    setStatus("You left the game.");
+}
+</script>
+
+</body>
+</html>
